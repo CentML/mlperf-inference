@@ -1,0 +1,95 @@
+services:
+  # Service 1: vLLM Server (with Healthcheck)
+  vllm:
+    image: vllm/vllm-openai:v0.11.0-x86_64
+    # entrypoint: []
+    # command: vllm serve Qwen/Qwen2.5-VL-7B-Instruct --host 0.0.0.0 --port 8000
+    command:
+      - "--model"
+      - "Qwen/Qwen2.5-VL-7B-Instruct"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+    ports:
+      - "8000:8000"
+    
+    # --- ADD THIS BLOCK to define when the server is "ready" ---
+    healthcheck:
+      # The vLLM server exposes a /health endpoint
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health"]
+      # How often to check (in seconds)
+      interval: 10s
+      # How long to wait for a response
+      timeout: 5s
+      # How many times to retry before marking as unhealthy
+      retries: 5
+      # !! CRITICAL: Wait 5 minutes before starting checks.
+      # This gives the container time to download and load the 7B+ model.
+      start_period: 300s
+    # --- END OF HEALTHCHECK BLOCK ---
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+
+  # Service 2: Ubuntu Script Runner (with wait condition)
+  script-runner:
+    build:
+      context: .
+      dockerfile: script-runner.Dockerfile
+    user: "${UID}:${GID}"
+    volumes:
+      - ../../loadgen:/loadgen/
+      - ./:/app
+    working_dir: /app
+    
+    environment:
+      - HOME=/app
+      - PATH=/app/.local/bin:$PATH
+      - CHECKPOINT_PATH=Qwen/Qwen2.5-VL-7B-Instruct
+      - DATASET_PATH=/app/datasets/mmmu_data.json
+      - GPU_COUNT=1
+    
+    # --- ADD THIS BLOCK to make this service wait for vllm ---
+    depends_on:
+      vllm:
+        condition: service_healthy
+    # --- END OF DEPENDS_ON BLOCK ---
+    
+    # command: >
+    #   /bin/sh -c "
+    #   echo 'vLLM server is healthy, starting script...' &&
+    #   pip install -r /app/requirements-script.txt &&
+    #   pip install /loadgen &&
+    #   cd datasets && python generate_json_dataset.py && cd ../ &&
+    #   python test_openai.py
+    #   "
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo 'vLLM server is healthy, starting script...'
+        pip install -r /app/requirements-script.txt
+        pip install /loadgen/
+        python alt_main.py --scenario Server \
+              --model-path $${CHECKPOINT_PATH} \
+              --batch-size 16 \
+              --accuracy \
+              --dtype bfloat16 \
+              --user-conf user.conf \
+              --total-sample-count 32768 \
+              --dataset-path $${DATASET_PATH} \
+              --output-log-dir output \
+              --tensor-parallel-size $${GPU_COUNT} \
+              --num-workers 8 \
+              --vllm 
+
+networks:
+  default:
+    driver: bridge
