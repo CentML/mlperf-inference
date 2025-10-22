@@ -169,25 +169,18 @@ def main():
 
     sut_cls = sut_map[args.scenario.lower()]
 
-    if args.vllm:
-        sut = sut_cls(
-            model_path=args.model_path,
-            dtype=args.dtype,
-            batch_size=args.batch_size,
-            dataset_path=args.dataset_path,
-            total_sample_count=args.total_sample_count,
-            workers=args.num_workers,
-            tensor_parallel_size=args.tensor_parallel_size
-        )
-    else:
-        sut = sut_cls(
-            model_path=args.model_path,
-            dtype=args.dtype,
-            batch_size=args.batch_size,
-            dataset_path=args.dataset_path,
-            total_sample_count=args.total_sample_count,
-            workers=args.num_workers,
-        )
+    
+    sut = sut_cls(
+        model_path=args.model_path,
+        dtype=args.dtype,
+        batch_size=args.batch_size,
+        dataset_path=args.dataset_path,
+        total_sample_count=args.total_sample_count,
+        workers=args.num_workers,
+        tensor_parallel_size=args.tensor_parallel_size,
+        scenario=args.scenario.lower()
+    )
+    
 
     # Start sut before loadgen starts
     sut.start()
@@ -200,7 +193,7 @@ def main():
         log_settings,
         args.audit_conf)
 
-    # Stop sut after completion
+    # # Stop sut after completion
     sut.stop()
 
     log.info("Run Completed!")

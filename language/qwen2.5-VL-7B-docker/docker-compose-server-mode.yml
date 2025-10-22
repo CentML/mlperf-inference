@@ -2,8 +2,6 @@ services:
   # Service 1: vLLM Server (with Healthcheck)
   vllm:
     image: vllm/vllm-openai:v0.11.0-x86_64
-    # entrypoint: []
-    # command: vllm serve Qwen/Qwen2.5-VL-7B-Instruct --host 0.0.0.0 --port 8000
     command:
       - "--model"
       - "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -25,7 +23,7 @@ services:
       # How many times to retry before marking as unhealthy
       retries: 5
       # !! CRITICAL: Wait 5 minutes before starting checks.
-      # This gives the container time to download and load the 7B+ model.
+      # This gives the container time to download and load the model.
       start_period: 300s
     # --- END OF HEALTHCHECK BLOCK ---
 
@@ -42,7 +40,7 @@ services:
   script-runner:
     build:
       context: .
-      dockerfile: script-runner.Dockerfile
+      dockerfile: server-mode.Dockerfile
     user: "${UID}:${GID}"
     volumes:
       - ../../loadgen:/loadgen/
@@ -60,28 +58,19 @@ services:
     depends_on:
       vllm:
         condition: service_healthy
-    # --- END OF DEPENDS_ON BLOCK ---
     
-    # command: >
-    #   /bin/sh -c "
-    #   echo 'vLLM server is healthy, starting script...' &&
-    #   pip install -r /app/requirements-script.txt &&
-    #   pip install /loadgen &&
-    #   cd datasets && python generate_json_dataset.py && cd ../ &&
-    #   python test_openai.py
-    #   "
     command:
       - /bin/bash
       - -c
       - |
         echo 'vLLM server is healthy, starting script...'
-        pip install -r /app/requirements-script.txt
+        pip install -r /app/requirements-server-mode.txt
         pip install /loadgen/
         cd datasets && python generate_json_dataset.py && cd ../ &&
-        python alt_main.py --scenario Server \
+        python main.py --scenario Server \
               --model-path $${CHECKPOINT_PATH} \
-              --batch-size 16 \
               --accuracy \
+              --batch-size 16 \
               --dtype bfloat16 \
               --user-conf user.conf \
               --total-sample-count 32768 \

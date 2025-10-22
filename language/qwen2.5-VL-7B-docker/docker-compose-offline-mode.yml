@@ -1,0 +1,55 @@
+services:
+  # Service 1: Script Runner
+  script-offline:
+    image: vllm/vllm-openai:v0.11.0-x86_64
+    
+    volumes:
+      - ../../loadgen:/loadgen/
+      - ./:/app
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    
+    working_dir: /app
+    
+    environment:
+      - CHECKPOINT_PATH=Qwen/Qwen2.5-VL-7B-Instruct
+      - DATASET_PATH=/app/datasets/mmmu_data.json
+      - GPU_COUNT=1
+      - HOST_UID=${UID}
+      - HOST_GID=${GID}
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+    entrypoint: []
+
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo 'starting script...'
+        pip install /loadgen/
+        pip install datasets
+        cd datasets && python3 generate_json_dataset.py && cd ../ &&
+        python3 main.py --scenario Offline \
+              --model-path $${CHECKPOINT_PATH} \
+              --accuracy \
+              --batch-size 100 \
+              --dtype bfloat16 \
+              --user-conf user.conf \
+              --total-sample-count 32768 \
+              --dataset-path $${DATASET_PATH} \
+              --output-log-dir output \
+              --tensor-parallel-size $${GPU_COUNT} \
+              --num-workers 1 \
+              --vllm
+
+        echo "Fixing file permissions..."
+        chown -R $HOST_UID:$HOST_GID datasets output
+
+networks:
+  default:
+    driver: bridge
