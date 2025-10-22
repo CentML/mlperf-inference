@@ -17,6 +17,7 @@ pattern = r"\[(.*?)\]"
 filepath = Path(os.getcwd(), "./output/mlperf_log_accuracy.json")
 target_path = Path(os.getcwd(), "./datasets/mmmu_data.json")
 
+
 def main(mode: str):
     with open(filepath, "r") as f:
         data = json.load(f)
@@ -26,11 +27,18 @@ def main(mode: str):
     ids = target.ids
     store_data = dict()
 
-    decoded_output = [np.frombuffer(bytes.fromhex(sorted_list[i]["data"]), np.int32) for i in range(len(sorted_list))]
+    decoded_output = [
+        np.frombuffer(
+            bytes.fromhex(
+                sorted_list[i]["data"]),
+            np.int32) for i in range(
+            len(sorted_list))]
     if mode == "offline":
-        text_outputs = processor.batch_decode(decoded_output, skip_special_tokens=True) 
+        text_outputs = processor.batch_decode(
+            decoded_output, skip_special_tokens=True)
     else:
-        text_outputs = ["".join(chr(j) for j in text_integers) for text_integers in decoded_output]
+        text_outputs = ["".join(chr(j) for j in text_integers)
+                        for text_integers in decoded_output]
     for i in range(len(sorted_list)):
         pred_txt = text_outputs[i]
         qsl_idx = sorted_list[i]["qsl_idx"]
@@ -41,6 +49,7 @@ def main(mode: str):
 
     with open("total_val_output.json", "w") as f:
         json.dump(store_data, f, indent=4)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

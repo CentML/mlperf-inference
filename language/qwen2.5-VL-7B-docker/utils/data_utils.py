@@ -7,12 +7,12 @@ import re
 
 
 DOMAIN_CAT2SUB_CAT = {
-  'Art and Design': ['Art', 'Art_Theory', 'Design', 'Music'],
-  'Business': ['Accounting', 'Economics', 'Finance', 'Manage','Marketing'],
-  'Science': ['Biology', 'Chemistry', 'Geography', 'Math', 'Physics',],
-  'Health and Medicine': ['Basic_Medical_Science', 'Clinical_Medicine', 'Diagnostics_and_Laboratory_Medicine', 'Pharmacy', 'Public_Health'],
-  'Humanities and Social Science': ['History', 'Literature', 'Sociology', 'Psychology'],
-  'Tech and Engineering': ['Agriculture', 'Architecture_and_Engineering', 'Computer_Science', 'Electronics', 'Energy_and_Power', 'Materials', 'Mechanical_Engineering'],
+    'Art and Design': ['Art', 'Art_Theory', 'Design', 'Music'],
+    'Business': ['Accounting', 'Economics', 'Finance', 'Manage', 'Marketing'],
+    'Science': ['Biology', 'Chemistry', 'Geography', 'Math', 'Physics',],
+    'Health and Medicine': ['Basic_Medical_Science', 'Clinical_Medicine', 'Diagnostics_and_Laboratory_Medicine', 'Pharmacy', 'Public_Health'],
+    'Humanities and Social Science': ['History', 'Literature', 'Sociology', 'Psychology'],
+    'Tech and Engineering': ['Agriculture', 'Architecture_and_Engineering', 'Computer_Science', 'Electronics', 'Energy_and_Power', 'Materials', 'Mechanical_Engineering'],
 }
 
 
@@ -50,6 +50,8 @@ CAT_SHORT2LONG = {
 }
 
 # DATA SAVING
+
+
 def save_json(filename, ds):
     with open(filename, 'w') as f:
         json.dump(ds, f, indent=4)
@@ -60,7 +62,7 @@ def get_multi_choice_info(options):
     Given the list of options for multiple choice question
     Return the index2ans and all_choices
     """
-    
+
     start_chr = 'A'
     all_choices = []
     index2ans = {}
@@ -69,6 +71,7 @@ def get_multi_choice_info(options):
         all_choices.append(chr(ord(start_chr) + i))
 
     return index2ans, all_choices
+
 
 def load_yaml(file_path):
     with open(file_path, 'r') as stream:
@@ -84,6 +87,7 @@ def parse_img_path(text):
     matches = re.findall("<img='(.*?)'>", text)
     return matches
 
+
 def process_single_sample(data):
     question = data['question']
     o_imgs_paths = []
@@ -94,16 +98,17 @@ def process_single_sample(data):
 
     if len(o_imgs_paths) > 1:  # multiple images in options, used for random selection
         return {'id': data['id'], 'question': question, 'options': data['options'], 'answer': data['answer'],
-             'image': None, 'question_type': data['question_type']}
+                'image': None, 'question_type': data['question_type']}
     else:
         return {'id': data['id'], 'question': question, 'options': data['options'], 'answer': data['answer'],
-             'image': data['image_1'], 'question_type': data['question_type']}
+                'image': data['image_1'], 'question_type': data['question_type']}
 
 
 # DATA SAVING
 def save_json(filename, ds):
     with open(filename, 'w') as f:
         json.dump(ds, f, indent=4)
+
 
 def save_jsonl(filename, data):
     """
@@ -117,10 +122,13 @@ def save_jsonl(filename, data):
         for img_path, caption in data.items():
             # Extract the base filename without the extension
             base_filename = os.path.basename(img_path)
-            # Create a JSON object with the filename as the key and caption as the value
-            json_record = json.dumps({base_filename: caption}, ensure_ascii=False)
+            # Create a JSON object with the filename as the key and caption as
+            # the value
+            json_record = json.dumps(
+                {base_filename: caption}, ensure_ascii=False)
             # Write the JSON object to the file, one per line
             f.write(json_record + '\n')
+
 
 def save_args(args, path_dir):
     argsDict = args.__dict__
@@ -129,7 +137,6 @@ def save_args(args, path_dir):
         for eachArg, value in argsDict.items():
             f.writelines(eachArg + ' : ' + str(value) + '\n')
         f.writelines('------------------- end -------------------')
-
 
 
 # DATA PROCESSING
@@ -154,18 +161,21 @@ def construct_prompt(sample, config):
         res_dict['all_choices'] = prediction_range
         res_dict['empty_prompt'] = empty_prompt
         if config['task_instructions']:
-            res_dict['final_input_prompt'] = config['task_instructions'].strip() + '\n\n' + empty_prompt
+            res_dict['final_input_prompt'] = config['task_instructions'].strip(
+            ) + '\n\n' + empty_prompt
         else:
             res_dict['final_input_prompt'] = empty_prompt
 
-        res_dict['gt_content'] = options[ord(sample['answer'].upper()) - ord('A')]
+        res_dict['gt_content'] = options[ord(
+            sample['answer'].upper()) - ord('A')]
     else:
         empty_prompt_sample_structure = config['short_ans_example_format']
         empty_prompt = empty_prompt_sample_structure.format(question)
         res_dict = {}
         res_dict['empty_prompt'] = empty_prompt
         if config['task_instructions']:
-            res_dict['final_input_prompt'] = config['task_instructions'].strip() + '\n\n' + empty_prompt
+            res_dict['final_input_prompt'] = config['task_instructions'].strip(
+            ) + '\n\n' + empty_prompt
         else:
             res_dict['final_input_prompt'] = empty_prompt
         res_dict['gt_content'] = sample['answer']

@@ -23,6 +23,7 @@ HOST = os.environ.get("VLLM_HOST", "vllm")
 PORT = int(os.environ.get("VLLM_PORT", "8000"))
 BASE_URL = f"http://{HOST}:{PORT}/v1"
 
+
 class SUT:
     def __init__(
         self,
@@ -64,7 +65,7 @@ class SUT:
             "temperature": 0.0,
             "max_tokens": 1024,
         }
-        
+
         if scenario == "offline":
             from vllm import SamplingParams
             from transformers import AutoProcessor
@@ -109,13 +110,15 @@ class SUT:
             prompts = []
             for item in qitems:
                 question = self.data_object.prompts[item.index]
-                
-                placeholders = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64img}"}} for b64img in self.data_object.images[item.index]]
+
+                placeholders = [{"type": "image_url", "image_url": {
+                    "url": f"data:image/png;base64,{b64img}"}} for b64img in self.data_object.images[item.index]]
                 messages = [
                     {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": [*placeholders, {"type": "text", "text": question}]},
+                    {"role": "user", "content": [
+                        *placeholders, {"type": "text", "text": question}]},
                 ]
-                
+
                 prompt = self.processor.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
@@ -123,9 +126,7 @@ class SUT:
                     "prompt": prompt,
                     "multi_modal_data": {"image": self.data_object.images[item.index]}
                 })
-            
-            
-                
+
             tik2 = time.time()
             outputs = self.model.generate(
                 prompts=prompts, sampling_params=self.sampling_params
@@ -168,10 +169,10 @@ class SUT:
         from vllm import LLM
         log.info("Loading model...")
         self.model = LLM(
-             self.model_path,
-             dtype=self.dtype,
-             tensor_parallel_size=self.tensor_parallel_size,
-         )
+            self.model_path,
+            dtype=self.dtype,
+            tensor_parallel_size=self.tensor_parallel_size,
+        )
         log.info("Loaded model")
 
     def get_sut(self):
@@ -198,7 +199,6 @@ class SUT:
 
     def flush_queries(self):
         pass
-
 
     def __del__(self):
         pass
@@ -231,10 +231,8 @@ class SUTServer(SUT):
             api_key="EMPTY"
         )
 
-
     def start(self):
         pass
-
 
     async def _issue_one(
         self,
@@ -244,7 +242,8 @@ class SUTServer(SUT):
         log.info("CALLED _issue_one")
         """Send one streaming chat.completion request and record timings."""
 
-        contents = [{"type": "text", "text": self.data_object.prompts[sample.index]}]
+        contents = [
+            {"type": "text", "text": self.data_object.prompts[sample.index]}]
         for img_b64 in self.data_object.images[sample.index]:
             contents.append({
                 "type": "image_url",
@@ -274,31 +273,39 @@ class SUTServer(SUT):
                 text = getattr(delta, "content", None)
                 if text:
                     if ttft_set is False:
-                        text_int32 = np.array([ord(c) for c in text], dtype=np.int32)
+                        text_int32 = np.array([ord(c)
+                                              for c in text], dtype=np.int32)
                         response_data = array.array("B", text_int32.tobytes())
                         bi = response_data.buffer_info()
-                        response = [lg.QuerySampleResponse(sample.id, bi[0], bi[1])]
+                        response = [
+                            lg.QuerySampleResponse(
+                                sample.id, bi[0], bi[1])]
                         lg.FirstTokenComplete(response)
                         ttft_set = True
                     out.append(text)
 
-            # when the stream ends, total latency   
+            # when the stream ends, total latency
             final_tokens = "".join(out)
-            final_tokens_int32 = np.array([ord(c) for c in final_tokens], dtype=np.int32)
+            final_tokens_int32 = np.array(
+                [ord(c) for c in final_tokens], dtype=np.int32)
             n_tokens = len(final_tokens_int32)
             response_array = array.array("B", final_tokens_int32.tobytes())
             bi = response_array.buffer_info()
-            response = [lg.QuerySampleResponse(sample.id, bi[0], bi[1], n_tokens)]
+            response = [
+                lg.QuerySampleResponse(
+                    sample.id,
+                    bi[0],
+                    bi[1],
+                    n_tokens)]
             lg.QuerySamplesComplete(response)
-
 
     async def _issue_queries_async(self, query_samples):
         """Async internal version used by the sync wrapper."""
-        log.info(f"CALLED _issue_queries_async, num workers: {self.num_workers}")
+        log.info(
+            f"CALLED _issue_queries_async, num workers: {self.num_workers}")
         semaphore = asyncio.Semaphore(self.num_workers)
         tasks = [self._issue_one(s, semaphore) for s in query_samples]
         return await asyncio.gather(*tasks)
-
 
     def issue_queries(self, query_samples):
         try:

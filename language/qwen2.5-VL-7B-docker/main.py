@@ -169,7 +169,6 @@ def main():
 
     sut_cls = sut_map[args.scenario.lower()]
 
-    
     sut = sut_cls(
         model_path=args.model_path,
         dtype=args.dtype,
@@ -180,7 +179,6 @@ def main():
         tensor_parallel_size=args.tensor_parallel_size,
         scenario=args.scenario.lower()
     )
-    
 
     # Start sut before loadgen starts
     sut.start()
