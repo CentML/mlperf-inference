@@ -8,8 +8,7 @@
 
 #### Evaluate accuracy ####
 
-Run
-Create a python virtual environment and then run these commands:
+Create and activate a python virtual environment and then run these commands:
 
 ```pip install numpy pandas pyyaml transformers```
 
