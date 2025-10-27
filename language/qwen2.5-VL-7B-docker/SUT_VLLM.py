@@ -8,7 +8,7 @@ import threading
 import queue
 
 import logging
-
+import contextlib
 import mlperf_loadgen as lg
 from dataset import Dataset
 from openai import AsyncOpenAI
@@ -29,21 +29,14 @@ class SUT:
         self,
         model_path=None,
         dtype="bfloat16",
-        batch_size=None,
         total_sample_count=13368,
         dataset_path=None,
-        use_cached_outputs=False,
         # Set this to True *only for test accuracy runs* in case your prior
         # session was killed partway through
         workers=1,
         tensor_parallel_size=8,
-        scenario="offline"
     ):
         self.model_path = model_path or f"Qwen/Qwen2.5-VL-7B-Instruct"
-
-        if not batch_size:
-            batch_size = 1
-        self.batch_size = batch_size
 
         self.dtype = dtype
         self.tensor_parallel_size = tensor_parallel_size
@@ -66,136 +59,97 @@ class SUT:
             "max_tokens": 1024,
         }
 
-        if scenario == "offline":
-            from vllm import SamplingParams
-            from transformers import AutoProcessor
-
-            self.load_model()
-            self.sampling_params = SamplingParams(**self.params)
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
-            self.request_id_counter = 0
-
-            self.worker_threads = [None] * self.num_workers
-            self.query_queue = queue.Queue()
-
-            self.use_cached_outputs = use_cached_outputs
-            self.sample_counter = 0
-            self.sample_counter_lock = threading.Lock()
+        self._client = AsyncOpenAI(
+            base_url=BASE_URL,
+            api_key="EMPTY"
+        )
 
     def start(self):
-        # Create worker threads
-        for j in range(self.num_workers):
-            worker = threading.Thread(target=self.process_queries)
-            worker.start()
-            self.worker_threads[j] = worker
+        pass
 
     def stop(self):
-        for _ in range(self.num_workers):
-            self.query_queue.put(None)
+        pass
 
-        for worker in self.worker_threads:
-            worker.join()
+    async def _issue_one(
+        self,
+        sample: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Send one streaming chat.completion request and record timings."""
 
-    def process_queries(self):
-        """Processor of the queued queries. User may choose to add batching logic"""
-        while True:
-            qitems = self.query_queue.get()
-            if qitems is None:
-                break
+        contents = [
+            {"type": "text", "text": self.data_object.prompts[sample.index]}]
+        for img_b64 in self.data_object.images[sample.index]:
+            contents.append({
+                "type": "image_url",
+                "image_url": {"url": img_b64}
+            })
 
-            query_ids = [q.index for q in qitems]
+        messages = [{"role": "user", "content": contents}]
 
-            tik1 = time.time()
+        ttft_set = False
 
-            prompts = []
-            for item in qitems:
-                question = self.data_object.prompts[item.index]
-
-                placeholders = [{"type": "image_url", "image_url": {
-                    "url": f"data:image/png;base64,{b64img}"}} for b64img in self.data_object.images[item.index]]
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": [
-                        *placeholders, {"type": "text", "text": question}]},
-                ]
-
-                prompt = self.processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                prompts.append({
-                    "prompt": prompt,
-                    "multi_modal_data": {"image": self.data_object.images[item.index]}
-                })
-
-            tik2 = time.time()
-            outputs = self.model.generate(
-                prompts=prompts, sampling_params=self.sampling_params
-            )
-            pred_output_tokens = []
-            for output in outputs:
-                pred_output_tokens.append(list(output.outputs[0].token_ids))
-                # log.info(f"Output: {output.outputs[0].text}")
-            tik3 = time.time()
-
-            processed_output = self.data_object.postProcess(
-                pred_output_tokens,
-                query_id_list=query_ids,
-            )
-            for i in range(len(qitems)):
-                n_tokens = processed_output[i].shape[0]
-                response_array = array.array(
-                    "B", processed_output[i].tobytes())
-                bi = response_array.buffer_info()
-                response = [
-                    lg.QuerySampleResponse(
-                        qitems[i].id,
-                        bi[0],
-                        bi[1],
-                        n_tokens)]
-                lg.QuerySamplesComplete(response)
-
-            tok = time.time()
-
-            with self.sample_counter_lock:
-                self.sample_counter += len(qitems)
-                log.info(f"Samples run: {self.sample_counter}")
-                if tik1:
-                    log.info(f"\tBatchMaker time: {tik2 - tik1}")
-                    log.info(f"\tInference time: {tik3 - tik2}")
-                    log.info(f"\tPostprocess time: {tok - tik3}")
-                    log.info(f"\t==== Total time: {tok - tik1}")
-
-    def load_model(self):
-        from vllm import LLM
-        log.info("Loading model...")
-        self.model = LLM(
-            self.model_path,
-            dtype=self.dtype,
-            tensor_parallel_size=self.tensor_parallel_size,
+        # await the async creation; ask for a streaming iterator
+        stream = await self._client.chat.completions.create(
+            stream=True,
+            messages=messages,
+            model=self.model_path,
+            **self.params
         )
-        log.info("Loaded model")
+        out = []
+        # iterate asynchronously
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            # first non-empty token → TTFT
+            delta = chunk.choices[0].delta
+            text = getattr(delta, "content", None)
+            if text:
+                if ttft_set is False:
+                    text_int32 = np.array([ord(c)
+                                            for c in text], dtype=np.int32)
+                    response_data = array.array("B", text_int32.tobytes())
+                    bi = response_data.buffer_info()
+                    response = [
+                        lg.QuerySampleResponse(
+                            sample.id, bi[0], bi[1])]
+                    lg.FirstTokenComplete(response)
+                    ttft_set = True
+                out.append(text)
 
-    def get_sut(self):
-        self.sut = lg.ConstructSUT(self.issue_queries, self.flush_queries)
-        return self.sut
+        # when the stream ends, total latency
+        final_tokens = "".join(out)
+        final_tokens_int32 = np.array(
+            [ord(c) for c in final_tokens], dtype=np.int32)
+        n_tokens = len(final_tokens_int32)
+        response_array = array.array("B", final_tokens_int32.tobytes())
+        bi = response_array.buffer_info()
+        response = [
+            lg.QuerySampleResponse(
+                sample.id,
+                bi[0],
+                bi[1],
+                n_tokens)]
+        lg.QuerySamplesComplete(response)
 
-    def get_qsl(self):
-        return self.qsl
-
-    def predict(self, **kwargs):
-        raise NotImplementedError
+    async def _issue_queries_async(self, query_samples):
+        """Async internal version used by the sync wrapper."""
+        # Decide which context manager to use
+        tasks = [self._issue_one(s) for s in query_samples]
+        return await asyncio.gather(*tasks)
 
     def issue_queries(self, query_samples):
-        """Receives samples from loadgen and adds them to queue. Users may choose to batch here"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-        list_prompts_tokens = []
-        list_prompts_attn_masks = []
-
-        log.info(f"IssueQuery started with {len(query_samples)} samples")
-        while len(query_samples) > 0:
-            self.query_queue.put(query_samples[: self.batch_size])
-            query_samples = query_samples[self.batch_size:]
-        log.info(f"IssueQuery done")
+        if loop and loop.is_running():
+            return asyncio.run_coroutine_threadsafe(
+                self._issue_queries_async(query_samples), loop
+            ).result()
+        log.info(f"Sending {len(query_samples)} queries samples")
+        asyncio.run(self._issue_queries_async(query_samples))
 
     def flush_queries(self):
         pass
@@ -211,114 +165,182 @@ class SUTServer(SUT):
         dtype="bfloat16",
         total_sample_count=13368,
         dataset_path=None,
-        batch_size=None,
         workers=1,
         tensor_parallel_size=8,
-        scenario="offline"
     ):
         super().__init__(
             model_path=model_path,
-            batch_size=batch_size,
             dtype=dtype,
             total_sample_count=total_sample_count,
             dataset_path=dataset_path,
             workers=workers,
             tensor_parallel_size=tensor_parallel_size,
-            scenario=scenario
-        )
-        self._client = AsyncOpenAI(
-            base_url=BASE_URL,
-            api_key="EMPTY"
         )
 
     def start(self):
-        pass
+        """Starts the asyncio event loop in a dedicated thread."""
+        log.info("Starting SUT Server...")
+        self.event_loop_thread = threading.Thread(target=self.run_async_loop, daemon=True)
+        self.event_loop_thread.start()
 
-    async def _issue_one(
-        self,
-        sample: Dict[str, Any],
-        semaphore: asyncio.Semaphore,
-    ) -> Dict[str, Any]:
-        log.info("CALLED _issue_one")
-        """Send one streaming chat.completion request and record timings."""
 
-        contents = [
-            {"type": "text", "text": self.data_object.prompts[sample.index]}]
-        for img_b64 in self.data_object.images[sample.index]:
-            contents.append({
-                "type": "image_url",
-                "image_url": {"url": img_b64}
-            })
+    def run_async_loop(self):
+        """The target for our dedicated thread. It sets up and runs the event loop."""
+        log.info("Asyncio event loop thread started.")
+        self.event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.event_loop)
 
-        messages = [{"role": "user", "content": contents}]
+        # Create the asyncio queue inside the loop it belongs to
+        self.async_query_queue = asyncio.Queue()
 
-        async with semaphore:
-            ttft_set = False
+        # Run the main async setup and worker creation
+        self.event_loop.run_until_complete(self.async_startup())
+        self.event_loop.run_forever()
+        log.info("Asyncio event loop thread finished.")
 
-            # await the async creation; ask for a streaming iterator
-            stream = await self._client.chat.completions.create(
-                stream=True,
-                messages=messages,
-                model=self.model_path,
-                **self.params
-            )
-            out = []
-            # iterate asynchronously
-            async for chunk in stream:
-                choices = getattr(chunk, "choices", None)
-                if not choices:
-                    continue
-                # first non-empty token → TTFT
-                delta = chunk.choices[0].delta
-                text = getattr(delta, "content", None)
-                if text:
-                    if ttft_set is False:
-                        text_int32 = np.array([ord(c)
-                                              for c in text], dtype=np.int32)
-                        response_data = array.array("B", text_int32.tobytes())
-                        bi = response_data.buffer_info()
-                        response = [
-                            lg.QuerySampleResponse(
-                                sample.id, bi[0], bi[1])]
-                        lg.FirstTokenComplete(response)
-                        ttft_set = True
-                    out.append(text)
+    async def async_startup(self):
+        """Initializes async resources like the engine and creates worker tasks."""
+         
+        # The rest of the async setup remains the same
+        self.async_workers = [
+            asyncio.create_task(self.process_queries_async()) for _ in range(self.num_workers)
+        ]
+        log.info(f"Started {self.num_workers} async worker tasks.")
 
-            # when the stream ends, total latency
-            final_tokens = "".join(out)
-            final_tokens_int32 = np.array(
-                [ord(c) for c in final_tokens], dtype=np.int32)
-            n_tokens = len(final_tokens_int32)
-            response_array = array.array("B", final_tokens_int32.tobytes())
-            bi = response_array.buffer_info()
-            response = [
-                lg.QuerySampleResponse(
-                    sample.id,
-                    bi[0],
-                    bi[1],
-                    n_tokens)]
-            lg.QuerySamplesComplete(response)
 
-    async def _issue_queries_async(self, query_samples):
-        """Async internal version used by the sync wrapper."""
-        log.info(
-            f"CALLED _issue_queries_async, num workers: {self.num_workers}")
-        semaphore = asyncio.Semaphore(self.num_workers)
-        tasks = [self._issue_one(s, semaphore) for s in query_samples]
-        return await asyncio.gather(*tasks)
+    async def process_queries_async(self):
+        """
+        This is the new async worker. It replaces the old threaded `process_queries`.
+        It runs in a continuous loop on the main event loop.
+        """
+        while True:
+            sample = await self.async_query_queue.get()
+            try:
+                if sample is None:
+                # Received poison pill, exit the loop.
+                # The `finally` block will still execute.
+                    break
+                
+                contents = [
+                    {"type": "text", "text": self.data_object.prompts[sample.index]}]
+                for img_b64 in self.data_object.images[sample.index]:
+                    contents.append({
+                        "type": "image_url",
+                        "image_url": {"url": img_b64}
+                    })
+
+                messages = [{"role": "user", "content": contents}]
+
+                ttft_set = False
+
+                # await the async creation; ask for a streaming iterator
+                stream = await self._client.chat.completions.create(
+                    stream=True,
+                    messages=messages,
+                    model=self.model_path,
+                    **self.params
+                )
+                out = []
+                # iterate asynchronously
+                async for chunk in stream:
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        continue
+                    # first non-empty token → TTFT
+                    delta = chunk.choices[0].delta
+                    text = getattr(delta, "content", None)
+                    if text:
+                        if ttft_set is False:
+                            text_int32 = np.array([ord(c)
+                                                    for c in text], dtype=np.int32)
+                            response_data = array.array("B", text_int32.tobytes())
+                            bi = response_data.buffer_info()
+                            response = [
+                                lg.QuerySampleResponse(
+                                    sample.id, bi[0], bi[1])]
+                            lg.FirstTokenComplete(response)
+                            ttft_set = True
+                        out.append(text)
+
+                # when the stream ends, total latency
+                final_tokens = "".join(out)
+                final_tokens_int32 = np.array(
+                    [ord(c) for c in final_tokens], dtype=np.int32)
+                n_tokens = len(final_tokens_int32)
+                response_array = array.array("B", final_tokens_int32.tobytes())
+                bi = response_array.buffer_info()
+                response = [
+                    lg.QuerySampleResponse(
+                        sample.id,
+                        bi[0],
+                        bi[1],
+                        n_tokens)]
+                lg.QuerySamplesComplete(response)
+
+            except Exception as e:
+                log.error(f"Error processing item {sample.id if sample else 'None'}: {e}")
+            finally:
+                # CRITICAL FIX: This ensures task_done() is called for every item,
+                # including the `None` poison pill that signals the end.
+                self.async_query_queue.task_done()
+
+
 
     def issue_queries(self, query_samples):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+        """
+        This is called by the synchronous MLPerf thread.
+        We must use a thread-safe method to submit work to our event loop.
+        """
+        # We need to handle the case where the loop isn't ready yet
+        if not self.event_loop:
+            time.sleep(0.1) # Simple wait for the loop to start
+            if not self.event_loop:
+                 log.error("Event loop not available to issue queries.")
+                 return
 
-        if loop and loop.is_running():
-            return asyncio.run_coroutine_threadsafe(
-                self._issue_queries_async(query_samples), loop
-            ).result()
-        log.info("CALLED BEFORE ASYNCIO RUN:")
-        asyncio.run(self._issue_queries_async(query_samples))
+        # Use run_coroutine_threadsafe to safely put an item into the asyncio.Queue
+        # from this synchronous thread.
+        # This is the bridge between the two concurrency models.
+        for sample in query_samples:
+            asyncio.run_coroutine_threadsafe(
+                self.async_query_queue.put(sample), self.event_loop
+            )
 
     def stop(self):
-        pass
+        """Stops the workers, the vLLM engine, and the event loop in the correct order."""
+        log.info("Stopping SUT server...")
+
+        if self.event_loop and self.async_query_queue:
+            # Step 1 & 2: Signal our workers and wait for them to finish.
+            for _ in range(self.num_workers):
+                asyncio.run_coroutine_threadsafe(self.async_query_queue.put(None), self.event_loop)
+            
+            join_future = asyncio.run_coroutine_threadsafe(self.async_query_queue.join(), self.event_loop)
+            join_future.result()
+            
+            # Step 3: Add a final cleanup phase to gracefully cancel any remaining
+            
+            # This coroutine will gather and cancel all running tasks.
+            async def final_cleanup(loop):
+                tasks = [t for t in asyncio.all_tasks(loop=loop) if t is not asyncio.current_task(loop=loop)]
+                if tasks:
+                    log.info(f"Cleaning up {len(tasks)} remaining tasks...")
+                    for task in tasks:
+                        task.cancel()
+                    # We await the gather to allow the tasks to process their cancellation.
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                log.info("Final cleanup complete.")
+
+            # Schedule the cleanup on the loop and wait for it to finish.
+            cleanup_future = asyncio.run_coroutine_threadsafe(final_cleanup(self.event_loop), self.event_loop)
+            cleanup_future.result()
+
+            # Step 4: Now that everything is clean, stop the event loop.
+            if self.event_loop.is_running():
+                self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+                
+        # Step 5: Wait for the event loop's thread to terminate.
+        if self.event_loop_thread:
+            self.event_loop_thread.join()
+            
+        log.info("SUT server stopped.")

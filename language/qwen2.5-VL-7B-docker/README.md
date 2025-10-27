@@ -1,10 +1,10 @@
 ## How to run the docker compose file ##
 
 **Offline mode**
-```UID=$(id -u) GID=$(id -g) docker compose -f docker-compose-offline-mode.yml up```
+```UID=$(id -u) GID=$(id -g) SCENARIO=Offline docker compose -f docker-compose-qwen.yml up```
 
 **Server Mode**
-```UID=$(id -u) GID=$(id -g) docker compose -f docker-compose-server-mode.yml up```
+```UID=$(id -u) GID=$(id -g) SCENARIO=Server docker compose -f docker-compose-qwen.yml up```
 
 #### Evaluate accuracy ####
 

@@ -1,135 +1,101 @@
-import subprocess
 import mlperf_loadgen as lg
-import argparse
 import os
 import logging
 import sys
-import requests
-import json
+
+from enum import Enum
+from typing import Annotated, Optional, Literal
+
+from typing_extensions import Annotated
+from pydantic import Field, BaseModel
+import typer
+import pydantic_typer
 
 sys.path.insert(0, os.getcwd())
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("Qwen2-5-7B-MAIN")
 
-# function to check the model name in server matches the user specified one
+
+class Scenario(str, Enum):
+    Offline = "Offline"
+    Server = "Server"
+    SingleStream = "SingleStream"
 
 
-def verify_model_name(user_specified_name, url):
-    response = requests.get(url)
-    if response.status_code == 200:
-        response_dict = response.json()
-        server_model_name = response_dict["data"][0]["id"]
-        if user_specified_name == server_model_name:
-            return {"matched": True, "error": False}
-        else:
-            return {
-                "matched": False,
-                "error": f"User specified {user_specified_name} and server model name {server_model_name} mismatch!",
-            }
-    else:
-        return {
-            "matched": False,
-            "error": f"Failed to get a valid response. Status code: {response.status_code}",
-        }
+DType = Literal["float16", "bfloat16", "float32"]
 
 
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--scenario",
-        type=str,
-        choices=["Offline", "Server", "SingleStream"],
-        default="Offline",
-        help="Scenario",
+# ---- Pydantic model describing your CLI options ----
+class Args(BaseModel):
+    scenario: Scenario = Field(
+        default=Scenario.Offline,
+        description="Scenario",
     )
-    parser.add_argument(
-        "--model-path",
-        type=str,
+    model_path: str = Field(
         default="Qwen/Qwen2.5-VL-7B-Instruct",
-        help="Model name",
+        description="Model name"
     )
-    parser.add_argument("--dataset-path", type=str, default=None, help="")
-    parser.add_argument(
-        "--accuracy",
-        action="store_true",
-        help="Run accuracy mode")
-    parser.add_argument(
-        "--dtype",
-        type=str,
+    dataset_path: str = Field(
+        default="",
+        description="Path to dataset"
+    )
+    accuracy: Annotated[bool, typer.Option()] = Field(
+        default=False,
+        description="Run accuracy mode",
+    )
+    dtype: DType = Field(
         default="float32",
-        help="data type of the model, choose from float16, bfloat16 and float32",
+        description="Data type of the model, choose from float16, bfloat16 and float32",
     )
-    parser.add_argument(
-        "--audit-conf",
-        type=str,
+    audit_conf: str = Field(
         default="audit.conf",
-        help="audit config for LoadGen settings during compliance runs",
+        description="Audit config for LoadGen settings during compliance runs",
     )
-    parser.add_argument(
-        "--user-conf",
-        type=str,
+    user_conf: str = Field(
         default="user.conf",
-        help="user config for user LoadGen settings such as target QPS",
+        description="User config for LoadGen settings such as target QPS",
     )
-    # TODO: This interpretation of 'total-sample-count' is a little
-    # misleading. Fix it
-    parser.add_argument(
-        "--total-sample-count",
-        type=int,
+    total_sample_count: int = Field(
         default=13368,
-        help="Number of samples to use in benchmark.",
+        description="Number of samples to use in benchmark.",
     )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
+    batch_size: int = Field(
         default=1,
-        help="Model batch-size to use in benchmark.",
+        description="Model batch-size to use in benchmark.",
     )
-    parser.add_argument(
-        "--output-log-dir", type=str, default="output-logs", help="Where logs are saved"
+    output_log_dir: str = Field(
+        default="output",
+        description="Where logs are saved",
     )
-    parser.add_argument(
-        "--enable-log-trace",
-        action="store_true",
-        help="Enable log tracing. This file can become quite large",
+    enable_log_trace: Annotated[bool, typer.Option()] = Field(
+        default=False,
+        description="Enable log tracing (file can become large)",
     )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
+    num_workers: int = Field(
         default=1,
-        help="Number of workers to process queries",
+        description="Number of workers to process queries",
     )
-    parser.add_argument(
-        "--tensor-parallel-size",
-        type=int,
+    tensor_parallel_size: int = Field(
         default=8,
-        help="Number of workers to process queries",
+        description="Tensor-parallel size",
     )
-    parser.add_argument("--vllm", action="store_true", help="vllm mode")
-    parser.add_argument(
-        "--api-model-name",
-        type=str,
+    vllm: Annotated[bool, typer.Option()] = Field(
+        default=False,
+        description="Enable vLLM mode",
+    )
+    api_model_name: str = Field(
         default="Qwen/Qwen2.5-VL-7B-Instruct",
-        help="Model name(specified in llm server)",
+        description="Model name (as exposed by the LLM server)",
     )
-    parser.add_argument(
-        "--api-server",
-        type=str,
+    api_server: Optional[str] = Field(
         default=None,
-        help="Specify an api endpoint call to use api mode",
+        description="API endpoint to use API mode",
     )
-    parser.add_argument(
-        "--lg-model-name",
-        type=str,
+    lg_model_name: Literal["qwen2_5-7B", "qwen2_5-7B-edge"] = Field(
         default="qwen2_5-7B",
-        choices=["qwen2_5-7B", "qwen2_5-7B-edge"],
-        help="Model name(specified in llm server)",
+        description="LoadGen-visible model name",
     )
-
-    args = parser.parse_args()
-    return args
-
 
 scenario_map = {
     "offline": lg.TestScenario.Offline,
@@ -138,13 +104,10 @@ scenario_map = {
 }
 
 
-def main():
-    args = get_args()
+def main(args: Args):
 
     settings = lg.TestSettings()
     settings.scenario = scenario_map[args.scenario.lower()]
-    # mlperf.conf is automatically loaded by the loadgen
-    # settings.FromConfig(args.mlperf_conf, "llama3_1-8b", args.scenario)
     settings.FromConfig(args.user_conf, args.lg_model_name, args.scenario)
 
     if args.accuracy:
@@ -166,18 +129,16 @@ def main():
         raise NotImplementedError
 
     sut_map = {"offline": SUT, "server": SUTServer, "singlestream": SUTServer}
-
+    log.info(f"SCENARIO is : {args.scenario.lower()}")
     sut_cls = sut_map[args.scenario.lower()]
 
     sut = sut_cls(
         model_path=args.model_path,
         dtype=args.dtype,
-        batch_size=args.batch_size,
         dataset_path=args.dataset_path,
         total_sample_count=args.total_sample_count,
         workers=args.num_workers,
         tensor_parallel_size=args.tensor_parallel_size,
-        scenario=args.scenario.lower()
     )
 
     # Start sut before loadgen starts
@@ -204,4 +165,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    pydantic_typer.run(main)

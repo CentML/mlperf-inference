@@ -2,3 +2,4 @@ openai
 datasets
 pillow
 numpy
+pydantic-typer

@@ -53,6 +53,7 @@ services:
       - CHECKPOINT_PATH=Qwen/Qwen2.5-VL-7B-Instruct
       - DATASET_PATH=/app/datasets/mmmu_data.json
       - GPU_COUNT=1
+      - SCENARIO=${SCENARIO}
     
     # --- ADD THIS BLOCK to make this service wait for vllm ---
     depends_on:
@@ -67,18 +68,17 @@ services:
         pip install -r /app/requirements-server-mode.txt
         pip install /loadgen/
         cd datasets && python generate_json_dataset.py && cd ../ &&
-        python main.py --scenario Server \
-              --model-path $${CHECKPOINT_PATH} \
-              --accuracy \
-              --batch-size 16 \
-              --dtype bfloat16 \
-              --user-conf user.conf \
-              --total-sample-count 32768 \
-              --dataset-path $${DATASET_PATH} \
-              --output-log-dir output \
-              --tensor-parallel-size $${GPU_COUNT} \
-              --num-workers 16 \
-              --vllm 
+        time python main.py --args.scenario "$${SCENARIO}" \
+              --args.model_path "$${CHECKPOINT_PATH}" \
+              --args.batch_size 16 \
+              --args.dtype bfloat16 \
+              --args.user_conf user.conf \
+              --args.total_sample_count 900 \
+              --args.dataset_path "$${DATASET_PATH}" \
+              --args.output_log_dir output \
+              --args.tensor_parallel_size "$${GPU_COUNT}" \
+              --args.num_workers 256 \
+              --args.vllm 
 
 networks:
   default:
