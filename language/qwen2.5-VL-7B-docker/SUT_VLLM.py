@@ -107,7 +107,7 @@ class SUT:
             if text:
                 if ttft_set is False:
                     text_int32 = np.array([ord(c)
-                                            for c in text], dtype=np.int32)
+                                           for c in text], dtype=np.int32)
                     response_data = array.array("B", text_int32.tobytes())
                     bi = response_data.buffer_info()
                     response = [
@@ -180,9 +180,9 @@ class SUTServer(SUT):
     def start(self):
         """Starts the asyncio event loop in a dedicated thread."""
         log.info("Starting SUT Server...")
-        self.event_loop_thread = threading.Thread(target=self.run_async_loop, daemon=True)
+        self.event_loop_thread = threading.Thread(
+            target=self.run_async_loop, daemon=True)
         self.event_loop_thread.start()
-
 
     def run_async_loop(self):
         """The target for our dedicated thread. It sets up and runs the event loop."""
@@ -200,13 +200,12 @@ class SUTServer(SUT):
 
     async def async_startup(self):
         """Initializes async resources like the engine and creates worker tasks."""
-         
+
         # The rest of the async setup remains the same
         self.async_workers = [
             asyncio.create_task(self.process_queries_async()) for _ in range(self.num_workers)
         ]
         log.info(f"Started {self.num_workers} async worker tasks.")
-
 
     async def process_queries_async(self):
         """
@@ -217,10 +216,10 @@ class SUTServer(SUT):
             sample = await self.async_query_queue.get()
             try:
                 if sample is None:
-                # Received poison pill, exit the loop.
-                # The `finally` block will still execute.
+                    # Received poison pill, exit the loop.
+                    # The `finally` block will still execute.
                     break
-                
+
                 contents = [
                     {"type": "text", "text": self.data_object.prompts[sample.index]}]
                 for img_b64 in self.data_object.images[sample.index]:
@@ -252,8 +251,9 @@ class SUTServer(SUT):
                     if text:
                         if ttft_set is False:
                             text_int32 = np.array([ord(c)
-                                                    for c in text], dtype=np.int32)
-                            response_data = array.array("B", text_int32.tobytes())
+                                                   for c in text], dtype=np.int32)
+                            response_data = array.array(
+                                "B", text_int32.tobytes())
                             bi = response_data.buffer_info()
                             response = [
                                 lg.QuerySampleResponse(
@@ -278,13 +278,12 @@ class SUTServer(SUT):
                 lg.QuerySamplesComplete(response)
 
             except Exception as e:
-                log.error(f"Error processing item {sample.id if sample else 'None'}: {e}")
+                log.error(
+                    f"Error processing item {sample.id if sample else 'None'}: {e}")
             finally:
                 # CRITICAL FIX: This ensures task_done() is called for every item,
                 # including the `None` poison pill that signals the end.
                 self.async_query_queue.task_done()
-
-
 
     def issue_queries(self, query_samples):
         """
@@ -293,10 +292,10 @@ class SUTServer(SUT):
         """
         # We need to handle the case where the loop isn't ready yet
         if not self.event_loop:
-            time.sleep(0.1) # Simple wait for the loop to start
+            time.sleep(0.1)  # Simple wait for the loop to start
             if not self.event_loop:
-                 log.error("Event loop not available to issue queries.")
-                 return
+                log.error("Event loop not available to issue queries.")
+                return
 
         # Use run_coroutine_threadsafe to safely put an item into the asyncio.Queue
         # from this synchronous thread.
@@ -313,34 +312,42 @@ class SUTServer(SUT):
         if self.event_loop and self.async_query_queue:
             # Step 1 & 2: Signal our workers and wait for them to finish.
             for _ in range(self.num_workers):
-                asyncio.run_coroutine_threadsafe(self.async_query_queue.put(None), self.event_loop)
-            
-            join_future = asyncio.run_coroutine_threadsafe(self.async_query_queue.join(), self.event_loop)
+                asyncio.run_coroutine_threadsafe(
+                    self.async_query_queue.put(None), self.event_loop)
+
+            join_future = asyncio.run_coroutine_threadsafe(
+                self.async_query_queue.join(), self.event_loop)
             join_future.result()
-            
-            # Step 3: Add a final cleanup phase to gracefully cancel any remaining
-            
+
+            # Step 3: Add a final cleanup phase to gracefully cancel any
+            # remaining
+
             # This coroutine will gather and cancel all running tasks.
             async def final_cleanup(loop):
-                tasks = [t for t in asyncio.all_tasks(loop=loop) if t is not asyncio.current_task(loop=loop)]
+                tasks = [
+                    t for t in asyncio.all_tasks(
+                        loop=loop) if t is not asyncio.current_task(
+                        loop=loop)]
                 if tasks:
                     log.info(f"Cleaning up {len(tasks)} remaining tasks...")
                     for task in tasks:
                         task.cancel()
-                    # We await the gather to allow the tasks to process their cancellation.
+                    # We await the gather to allow the tasks to process their
+                    # cancellation.
                     await asyncio.gather(*tasks, return_exceptions=True)
                 log.info("Final cleanup complete.")
 
             # Schedule the cleanup on the loop and wait for it to finish.
-            cleanup_future = asyncio.run_coroutine_threadsafe(final_cleanup(self.event_loop), self.event_loop)
+            cleanup_future = asyncio.run_coroutine_threadsafe(
+                final_cleanup(self.event_loop), self.event_loop)
             cleanup_future.result()
 
             # Step 4: Now that everything is clean, stop the event loop.
             if self.event_loop.is_running():
                 self.event_loop.call_soon_threadsafe(self.event_loop.stop)
-                
+
         # Step 5: Wait for the event loop's thread to terminate.
         if self.event_loop_thread:
             self.event_loop_thread.join()
-            
+
         log.info("SUT server stopped.")

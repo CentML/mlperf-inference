@@ -97,6 +97,7 @@ class Args(BaseModel):
         description="LoadGen-visible model name",
     )
 
+
 scenario_map = {
     "offline": lg.TestScenario.Offline,
     "server": lg.TestScenario.Server,
