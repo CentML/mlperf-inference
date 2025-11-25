@@ -1,12 +1,6 @@
 # Replace with proper vllm container
 FROM nvcr.io/nvidian/vllm-cuda13
 
-
-
-# 0. Install uv
-# The fastest way to get uv is to copy it from the official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
 # 1. Install Git
 # Required for "git+..." dependencies to work.
 RUN apt-get update && \
