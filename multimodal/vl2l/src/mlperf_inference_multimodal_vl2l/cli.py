@@ -477,3 +477,4 @@ def benchmark(
     logger.info("The VL2L benchmark with LoadGen completed.")
     lg.DestroyQSL(qsl)
     lg.DestroySUT(sut)
+    del task
