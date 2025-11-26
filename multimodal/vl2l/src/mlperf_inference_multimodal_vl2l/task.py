@@ -18,6 +18,15 @@ from loguru import logger
 from openai import AsyncOpenAI, DefaultAioHttpClient
 from pympler import asizeof
 
+from pydantic import BaseModel
+
+class ProductMetadata(BaseModel):
+    category: str
+    brands: str
+    is_secondhand: bool
+
+json_schema = ProductMetadata.model_json_schema()
+
 if TYPE_CHECKING:
     from openai.types.chat.chat_completion_message_param import (
         ChatCompletionMessageParam,
@@ -63,6 +72,7 @@ class Task(ABC):
         )
         self.model_cli = model_cli
         self.openai_api_client = AsyncOpenAI(
+            timeout=3600,
             base_url=endpoint_cli.url,
             http_client=DefaultAioHttpClient(),
             api_key=endpoint_cli.api_key,
@@ -225,6 +235,13 @@ class Task(ABC):
                     response = await self.openai_api_client.chat.completions.create(
                         model=self.model_cli.repo_id,
                         messages=messages,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "product",
+                                "schema": json_schema
+                            }
+                        },
                     )
                     logger.trace(
                         "Received response (ID: {}) from endpoint after {} seconds: {}",
@@ -305,6 +322,13 @@ class Task(ABC):
                         model=self.model_cli.repo_id,
                         messages=messages,
                         stream_options={"include_usage": True},
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "product",
+                                "schema": json_schema
+                            }
+                        },
                     )
                     # iterate asynchronously
                     total_tokens = 0
