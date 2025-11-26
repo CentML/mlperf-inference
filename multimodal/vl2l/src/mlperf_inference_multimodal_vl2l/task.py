@@ -92,14 +92,11 @@ class Task(ABC):
 
     def __del__(self) -> None:
         """Clean up the resources used by the task."""
-        logger.info("Cleaning up the resources step 1")
         asyncio.run_coroutine_threadsafe(
             self.openai_api_client.close(),
             self.event_loop,
         ).result()
-        logger.info("Cleaning up the resources step 2")
         self.event_loop.call_soon_threadsafe(self.event_loop.stop)
-        logger.info("Cleaning up the resources step 3")
         self.event_loop_thread.join()
 
     @staticmethod
