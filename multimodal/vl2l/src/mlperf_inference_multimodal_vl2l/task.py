@@ -82,15 +82,24 @@ class Task(ABC):
         )
         self.loaded_messages: dict[int, list[ChatCompletionMessageParam]] = {}
         self.min_query_count = settings.min_query_count
+        # Track pending query tasks to ensure proper cleanup
+        self.pending_query_futures: list = []
+        self.pending_futures_lock = threading.Lock()
+        # Keep response buffers alive until LoadGen has copied them
+        # Using str | int keys because we store both query_id and "query_id_ttft"
+        self.response_buffers: dict[int | str, array.array] = {}
+        self.response_buffers_lock = threading.Lock()
 
     def __del__(self) -> None:
         """Clean up the resources used by the task."""
-        logger.trace("Cleaning up the resources used by the task...")
+        logger.info("Cleaning up the resources step 1")
         asyncio.run_coroutine_threadsafe(
             self.openai_api_client.close(),
             self.event_loop,
         ).result()
+        logger.info("Cleaning up the resources step 2")
         self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+        logger.info("Cleaning up the resources step 3")
         self.event_loop_thread.join()
 
     @staticmethod
@@ -168,6 +177,7 @@ class Task(ABC):
             round(allowed_memory_footprint / avg_messages_footprint),
             self.total_num_samples,
         )
+        logger.info(f"result is min({round(allowed_memory_footprint / avg_messages_footprint)},{self.total_num_samples})")
         logger.info(
             "Estimated maximum number of samples to load into the host memory is {}.",
             result,
@@ -183,11 +193,14 @@ class Task(ABC):
             Args:
                 query_sample_indices: The indices of the samples to load to host memory.
             """
+            logger.info(f"LoadGen requested loading {len(query_sample_indices)} samples...")
             for index in query_sample_indices:
+                
                 self.loaded_messages[index] = self.formulate_messages(
                     self.dataset[index],
                 )
-
+            logger.info(f"finished loading: {len(query_sample_indices)} samples")
+            
         def _unload_samples_from_ram(query_sample_indices: list[int]) -> None:
             """Called by LoadGen to unload samples from host memory after testing.
 
@@ -195,9 +208,18 @@ class Task(ABC):
                 query_sample_indices: The indices of the samples to unload from host
                     memory.
             """
+            logger.info(f"LoadGen requested unloading {len(query_sample_indices)} samples...")
             for index in query_sample_indices:
                 sample_to_unload = self.loaded_messages.pop(index, None)
                 del sample_to_unload
+            
+            # Clear response buffers now that LoadGen has finished with them
+            with self.response_buffers_lock:
+                num_buffers = len(self.response_buffers)
+                self.response_buffers.clear()
+            
+            logger.info(f"Finished unloading {len(query_sample_indices)} samples. Cleared {num_buffers} response buffers.")
+            logger.info("Test run completed. LoadGen may run additional iterations...") 
 
         return lg.ConstructQSL(
             self.total_num_samples,
@@ -255,16 +277,22 @@ class Task(ABC):
                     bytes_array = array.array("B", content.encode("utf-8"))
                     address, length = bytes_array.buffer_info()
                     size_in_bytes = length * bytes_array.itemsize
+                    
+                    # Store the bytes_array to prevent garbage collection
+                    # LoadGen needs this memory to remain valid while it copies the data
+                    with self.response_buffers_lock:
+                        self.response_buffers[query_sample.id] = bytes_array
+                    
                     lg.QuerySamplesComplete(
-                        [
-                            lg.QuerySampleResponse(
-                                query_sample.id,
-                                address,
-                                size_in_bytes,
-                                int(response.usage.completion_tokens),
-                            ),
-                        ],
-                    )
+                            [
+                                lg.QuerySampleResponse(
+                                    query_sample.id,
+                                    address,
+                                    size_in_bytes,
+                                    int(response.usage.completion_tokens),
+                                ),
+                            ],
+                        )
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "Error processing query sample index {} with response ID {}.",
@@ -277,6 +305,10 @@ class Task(ABC):
                         "B", empty_content.encode("utf-8"))
                     address, length = bytes_array.buffer_info()
                     size_in_bytes = length * bytes_array.itemsize
+
+                    with self.response_buffers_lock:
+                        self.response_buffers[query_sample.id] = bytes_array
+                    
                     lg.QuerySamplesComplete(
                         [
                             lg.QuerySampleResponse(
@@ -289,10 +321,12 @@ class Task(ABC):
                     )
 
             for query_sample in query_samples:
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     _query_endpoint_async(query_sample),
                     self.event_loop,
                 )
+                with self.pending_futures_lock:
+                    self.pending_query_futures.append(future)
 
         def _issue_streaming_queries(
                 query_samples: list[lg.QuerySample]) -> None:
@@ -353,16 +387,21 @@ class Task(ABC):
                                 "B", text.encode("utf-8"))
                             address, length = bytes_array.buffer_info()
                             size_in_bytes = length * bytes_array.itemsize
+                            
+                            # Store the first token buffer to prevent garbage collection
+                            with self.response_buffers_lock:
+                                self.response_buffers[f"{query_sample.id}_ttft"] = bytes_array
+                            
                             lg.FirstTokenComplete(
-                                [
-                                    lg.QuerySampleResponse(
-                                        query_sample.id,
-                                        address,
-                                        size_in_bytes,
-                                        1,
-                                    ),
-                                ],
-                            )
+                                    [
+                                        lg.QuerySampleResponse(
+                                            query_sample.id,
+                                            address,
+                                            size_in_bytes,
+                                            1,
+                                        ),
+                                    ],
+                                )
                             ttft_set = True
                         word_array.append(text)
 
@@ -371,16 +410,21 @@ class Task(ABC):
                     bytes_array = array.array("B", content.encode("utf-8"))
                     address, length = bytes_array.buffer_info()
                     size_in_bytes = length * bytes_array.itemsize
+                    
+                    # Store the final response buffer to prevent garbage collection
+                    with self.response_buffers_lock:
+                        self.response_buffers[query_sample.id] = bytes_array
+                    
                     lg.QuerySamplesComplete(
-                        [
-                            lg.QuerySampleResponse(
-                                query_sample.id,
-                                address,
-                                size_in_bytes,
-                                total_tokens,
-                            ),
-                        ],
-                    )
+                            [
+                                lg.QuerySampleResponse(
+                                    query_sample.id,
+                                    address,
+                                    size_in_bytes,
+                                    total_tokens,
+                                ),
+                            ],
+                        )
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "Error processing query sample index {} with response ID {}.",
@@ -395,6 +439,9 @@ class Task(ABC):
                     size_in_bytes = length * bytes_array.itemsize
                     # If TTFT was not set, we still need to complete that.
                     if not ttft_set:
+                        with self.response_buffers_lock:
+                            self.response_buffers[f"{query_sample.id}_ttft"] = bytes_array
+
                         lg.FirstTokenComplete(
                             [
                                 lg.QuerySampleResponse(
@@ -405,6 +452,10 @@ class Task(ABC):
                                 ),
                             ],
                         )
+                        ttft_set = True
+
+                    with self.response_buffers_lock:
+                        self.response_buffers[query_sample.id] = bytes_array
                     lg.QuerySamplesComplete(
                         [
                             lg.QuerySampleResponse(
@@ -417,35 +468,37 @@ class Task(ABC):
                     )
 
             for query_sample in query_samples:
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     _query_endpoint_async(query_sample),
                     self.event_loop,
                 )
+                with self.pending_futures_lock:
+                    self.pending_query_futures.append(future)
 
         def _flush_queries() -> None:
             """Called by the LoadGen to indicate that all queries have been issued."""
-
-            async def _wait_for_pending_queries_async() -> None:
-                """Wait for all pending queries to complete."""
-                results = await asyncio.gather(
-                    *[
-                        t
-                        for t in asyncio.all_tasks(self.event_loop)
-                        # Current task is this one that waits for pending
-                        # queries.
-                        if t is not asyncio.current_task()
-                    ],
-                    return_exceptions=True,
-                )
-                for result in results:
-                    if isinstance(result, Exception):
-                        raise result
-
-            future = asyncio.run_coroutine_threadsafe(
-                _wait_for_pending_queries_async(),
-                self.event_loop,
-            )
-            future.result()
+            logger.info(f"Flushing queries - waiting for {len(self.pending_query_futures)} pending queries to complete")
+            
+            # Wait for all tracked futures to complete
+            with self.pending_futures_lock:
+                futures_to_wait = list(self.pending_query_futures)
+            
+            for future in futures_to_wait:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Query failed with exception: {e}")
+                    raise
+            
+            # Clear the completed futures
+            with self.pending_futures_lock:
+                self.pending_query_futures.clear()
+            
+            logger.info(f"All queries flushed successfully. Response buffers held: {len(self.response_buffers)}")
+            
+            # Important: Keep response buffers alive until after this function returns
+            # LoadGen may still be copying the data after _flush_queries returns
+            # The buffers will be cleared when the task object is destroyed or on next run
 
         return lg.ConstructSUT(
             (
