@@ -69,6 +69,7 @@ class Task(ABC):
             base_url=endpoint_cli.url,
             http_client=DefaultAioHttpClient(),
             api_key=endpoint_cli.api_key,
+            timeout=3600,
         )
         self.event_loop, self.event_loop_thread = (
             self._create_event_loop_in_separate_thread()
@@ -78,13 +79,16 @@ class Task(ABC):
 
     def __del__(self) -> None:
         """Clean up the resources used by the task."""
-        logger.trace("Cleaning up the resources used by the task...")
+        logger.info("Cleaning up the resources used by the task...")
         asyncio.run_coroutine_threadsafe(
             self.openai_api_client.close(),
             self.event_loop,
         ).result()
+        logger.info("Closing the OpenAI API client...")
         self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+        logger.info("Stopping the event loop...")
         self.event_loop_thread.join()
+        logger.info("Joining the event loop thread...")
 
     @staticmethod
     def _create_event_loop_in_separate_thread() -> (
@@ -193,6 +197,7 @@ class Task(ABC):
                 self.loaded_samples[index] = self.formulate_loaded_sample(
                     self.dataset[index],
                 )
+            logger.debug("Loaded {} samples to host memory.", len(self.loaded_samples))
 
         def _unload_samples_from_ram(query_sample_indices: list[int]) -> None:
             """Called by LoadGen to unload samples from host memory after testing.
@@ -204,6 +209,7 @@ class Task(ABC):
             for index in query_sample_indices:
                 sample_to_unload = self.loaded_samples.pop(index, None)
                 del sample_to_unload
+            logger.debug("Unloaded {} samples from host memory.", len(query_sample_indices))
 
         return lg.ConstructQSL(
             self.total_num_samples,

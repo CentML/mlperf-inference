@@ -90,4 +90,6 @@ def benchmark(
     lg.StartTestWithLogSettings(sut, qsl, test_settings, log_settings)
     logger.info("The VL2L benchmark with LoadGen completed.")
     lg.DestroyQSL(qsl)
+    logger.debug("Destroying QSL...")
     lg.DestroySUT(sut)
+    logger.debug("Destroying SUT...")
