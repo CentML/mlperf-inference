@@ -504,7 +504,7 @@ and provide the following fields in a valid JSON object:
 You must choose only one, which is the most appropriate, correct, and specifc
 category out of the list of possible product categories.
 
-Your response should only contain a valid JSON object and nothing more.
+Your response should only contain a valid JSON object and nothing more, e.g., you should not fence the JSON object inside a ```json code block.
 The JSON object should match the followng JSON schema:
 ```json
 {json.dumps(ProductMetadata.model_json_schema(), indent=2)}
