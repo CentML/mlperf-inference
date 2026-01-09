@@ -585,6 +585,9 @@ class Settings(BaseModelWithAttributeDescriptionsFromDocstrings):
     logging: LogSettings
     """Test logging parameters."""
 
+    profile: bool = False
+    """Whether to profile the endpoint."""
+
     @model_validator(mode="after")
     def override_test_settings_from_user_conf(self) -> Self:
         """Override the test settings from the user.conf file."""
@@ -768,6 +771,8 @@ class EndpointToDeploy(Endpoint):
     healthcheck_timeout: timedelta = timedelta(seconds=5)
     """The timeout for the healthcheck request to the endpoint."""
 
+    payload_timeout: timedelta = timedelta(seconds=10)
+    """The timeout for the payload request to the endpoint."""
 
 class VllmEndpoint(EndpointToDeploy):
     """Specifies how to deploy an OpenAI API endpoint in vLLM for benchmarking."""

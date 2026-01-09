@@ -74,6 +74,8 @@ class EndpointDeployer(ABC):
         """
         self._startup()
         self._wait_for_ready()
+        if self.settings.profile:
+            self._start_profile()
         return self
 
     def __exit__(
@@ -89,6 +91,8 @@ class EndpointDeployer(ABC):
             exc_val: The exception value if an exception was raised.
             exc_tb: The exception traceback if an exception was raised.
         """
+        if self.settings.profile:
+            self._stop_profile()
         logger.info("Shutting down endpoint: {}", self.endpoint)
         self._shutdown()
         logger.info("Endpoint shut down successfully")
@@ -99,6 +103,16 @@ class EndpointDeployer(ABC):
 
         This method should start the endpoint.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _start_profile(self) -> None:
+        """Start the profiler"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _stop_profile(self) -> None:
+        """Stop the profiler"""
         raise NotImplementedError
 
     @abstractmethod
@@ -130,6 +144,7 @@ class EndpointDeployer(ABC):
             time.sleep(self.endpoint.poll_interval.total_seconds())
 
         raise EndpointStartupTimeoutError(self.endpoint.startup_timeout)
+
 
     @abstractmethod
     def _shutdown(self) -> None:
@@ -287,6 +302,32 @@ class LocalVllmDeployer(LocalProcessDeployer):
     def _stderr_log_file_key(self) -> str:
         """Get the log file key for the stderr log."""
         return "vllm-stderr"
+
+    def _start_profile(self) -> None:
+        profile_url = self.endpoint.url.rstrip("/v1") + "/start_profile"
+        try:
+            response = requests.post(
+                profile_url,
+                timeout=self.endpoint.payload_timeout.total_seconds(),
+            )
+            if response.status_code == HTTP_OK:
+                logger.info("Profile started successfully")
+                return
+        except requests.exceptions.RequestException:
+            pass
+    
+    def _stop_profile(self) -> None:
+        profile_url = self.endpoint.url.rstrip("/v1") + "/stop_profile"
+        try:
+            response = requests.post(
+                profile_url,
+                timeout=self.endpoint.payload_timeout.total_seconds(),
+            )
+            if response.status_code == HTTP_OK:
+                logger.info("Profile stopped successfully")
+                return
+        except requests.exceptions.RequestException:
+            pass
 
     def _build_command(self) -> list[str]:
         """Build the command to start the vLLM server."""
