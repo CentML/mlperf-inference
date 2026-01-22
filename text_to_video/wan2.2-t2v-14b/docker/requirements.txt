@@ -41,7 +41,7 @@ boto3==1.35.95
 requests==2.32.3
 tensorboard==2.20.0
 urllib3==2.2.3
-wheel==0.46.0
+wheel==0.46.2
 Cython==3.1.6
 
 git+https://github.com/facebookresearch/detectron2.git@a9c0821a12ad353fb2a96f019515990d5460c5ac
